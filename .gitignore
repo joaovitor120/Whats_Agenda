@@ -60,6 +60,7 @@ backup/
 backups/
 *.bak
 *.dump
+*.dump.json
 postgres_data/
 redis_data/
 evolution_data/

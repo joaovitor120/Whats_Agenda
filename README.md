@@ -203,6 +203,10 @@ Eventos aceitam datas futuras até dois anos, duração máxima de sete dias e r
 
 Para acessar diretamente pelo IP, sem túnel SSH, execute na VPS `python3 scripts/configure_evolution_access.py --host SEU_IP --port 8090` e `docker compose up -d --force-recreate evolution`. O script configura a porta publicada, a URL pública e a origem CORS do painel, preservando as credenciais e os volumes. O login fica em `http://SEU_IP:8090/manager`; o bot continua usando `http://evolution:8080` e o webhook `http://api:8000/webhooks/evolution` na rede Docker. Veja o passo a passo em `setup.md`. Esse acesso por IP usa HTTP; HTTPS requer domínio/proxy.
 
+### Transferir a agenda existente
+
+Clonar o repositório e copiar `.env` não transferem os volumes Docker. Para levar usuários, eventos, recorrências, lembretes e histórico a outra máquina, use `scripts/backup_database.py` e `scripts/restore_database.py`, conforme a seção 12 de `setup.md`. A restauração completa substitui o banco de destino, salva antes uma cópia dele e confere a integridade do arquivo. Os backups ficam fora do Git. Se ambos os bancos possuem agendamentos novos, é necessário mesclar os dados antes da substituição.
+
 ### Confirmação, correções e vários compromissos
 
 - O acesso é restrito aos telefones de `WHATSAPP_ALLOWED_CONTACTS` no `.env`, em JSON `{"telefone internacional":"Nome"}`. Lista ausente ou `{}` bloqueia todos. Use `55` + DDD + número, sem pontuação. Contatos externos à lista são ignorados antes de transcrição/LLM; o worker revalida mensagens antigas e o cliente Evolution bloqueia respostas, presença e lembretes a destinatários não autorizados. Veja em `setup.md` como editar a lista e recriar os serviços para aplicar a mudança.

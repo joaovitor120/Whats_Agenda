@@ -477,7 +477,57 @@ print(json.dumps(r.json(), indent=2))
 | Entrada `needs_review` ou saída `uncertain` | Confira o efeito externo antes de tentar novamente; essas situações exigem reconciliação administrativa. |
 | Lembrete não veio após longo período desligado | Lembretes atrasados além da tolerância, ou cujo evento já começou, expiram. |
 
-## 12. Quando levar para um servidor 24 horas
+## 12. Transferir os dados do computador para a VPS
+
+**Git clone e copiar `.env` não transferem o banco.** Usuários, agendamentos, recorrências, preferências e histórico ficam no volume PostgreSQL de cada máquina. Uma VPS nova começa com banco vazio. O banco da agenda é separado do banco e da sessão WhatsApp da Evolution.
+
+### Backup no computador Windows
+
+Pare os processos que alteram a agenda e inicie somente o banco:
+
+```powershell
+cd C:\Users\jvbin\Desktop\Whats_Agenda
+docker compose stop api worker beat
+docker compose start postgres
+python scripts/backup_database.py --output backups/agenda-local.dump
+```
+
+O script salva um arquivo binário PostgreSQL e `agenda-local.dump.json`, com SHA256 e contagens, sem converter o backup em texto pelo PowerShell. Os arquivos ficam fora do Git; o dump completo contém dados pessoais e histórico de conversas. Um arquivo existente nunca é sobrescrito. Para outro backup, escolha outro nome.
+
+Envie os dois arquivos pelo PowerShell da sua máquina:
+
+```powershell
+scp "C:\Users\jvbin\Desktop\Whats_Agenda\backups\agenda-local.dump" "C:\Users\jvbin\Desktop\Whats_Agenda\backups\agenda-local.dump.json" root@76.13.228.205:/opt/Whats_Agenda/
+```
+
+O SCP pode solicitar a senha SSH da VPS. **Este procedimento substitui o banco da agenda da VPS pelo banco local.** Se os dois ambientes possuem novos agendamentos que devem ser mantidos, prepare uma mesclagem antes de restaurar. Mantenha a mesma `TOKEN_ENCRYPTION_KEY` para abrir tokens de calendário existentes.
+
+### Restaurar na VPS
+
+```bash
+cd /opt/Whats_Agenda
+git pull --ff-only
+mkdir -p backups
+mv agenda-local.dump agenda-local.dump.json backups/
+chmod 700 backups
+chmod 600 backups/agenda-local.dump backups/agenda-local.dump.json
+python3 scripts/restore_database.py backups/agenda-local.dump --replace-current-database
+```
+
+O script exige Linux e a opção explícita de substituição. Confere o SHA256 e o formato do arquivo, para API/worker/Beat e salva o banco atual da VPS em `backups/vps-antes-restauracao-*.dump`. O `pg_restore` usa uma única transação e a role da aplicação, preservando as permissões. Se a restauração falhar, não reinicie o bot: confira o erro e o backup anterior. O `.env`, os volumes e a Evolution não são substituídos.
+
+Depois de aparecer **Banco restaurado**, confira as contagens exibidas, aplique migrations e inicie o bot:
+
+```bash
+docker compose run --rm migrate
+docker compose up -d api worker beat
+docker compose exec -T api python -m app.integrations.evolution.setup
+curl -fsS http://127.0.0.1:8000/health/ready
+```
+
+Se qualquer comando falhar, resolva o erro antes de executar o seguinte. A restauração preserva os estados das mensagens; não redefine respostas antigas como pendentes. Os lembretes vencidos continuam sujeitos à política de expiração. Deixe API, worker e Beat parados no computador para que somente a VPS processe a agenda.
+
+## 13. Quando levar para um servidor 24 horas
 
 O setup acima já usa integrações reais, mas permanece local. Para disponibilização contínua em servidor:
 
