@@ -1,0 +1,354 @@
+O **Whats_Agenda é um assistente de agenda pelo WhatsApp**, feito em Python, com componentes separados para receber mensagens, interpretar pedidos, gerenciar compromissos e enviar lembretes.
+
+Abaixo está o mapa do projeto. **Os links abrem os arquivos correspondentes no seu workspace.**
+
+## 1. Como ele está configurado hoje
+
+Conferi as configurações atuais do `.env`:
+
+| Parte | Configuração |
+|---|---|
+| WhatsApp | Evolution API real, apontando para o container local |
+| Interpretação de mensagens | Claude Haiku 4.5 |
+| Áudio | Ativado, com transcrição local |
+| Modelo de transcrição | Whisper Small |
+| Calendário | Modo local/simulado, com eventos no banco do projeto |
+| Google Calendar / Outlook | Há integração implementada, mas o calendário real ainda não está ativado |
+
+**Portanto: o Claude está habilitado, mas seus compromissos ainda estão sendo administrados no banco local do projeto.**
+
+## 2. O caminho completo de uma mensagem
+
+```mermaid
+flowchart TD
+    A["Você envia texto ou áudio no WhatsApp"] --> B["Evolution API"]
+    B --> C["API Python recebe o webhook"]
+    C --> D["Salva a mensagem no PostgreSQL"]
+    D --> E["Fila Redis → Worker Celery"]
+    E --> F{"É áudio?"}
+    F -->|Sim| G["Whisper local transforma áudio em texto"]
+    F -->|Não| H["Controlador da conversa"]
+    G --> H
+    H --> I["Regras simples ou interpretação pelo Claude"]
+    I --> J["Validação e operação na agenda"]
+    J --> K["Monta e salva a resposta"]
+    K --> B
+    B --> L["Você recebe a resposta no WhatsApp"]
+    J --> M["Lembretes salvos no banco"]
+    M --> N["Agendador identifica o momento de enviar"]
+    N --> K
+```
+
+Há duas inteligências diferentes nesse caminho:
+
+- **Whisper:** transforma a sua voz em texto.
+- **Claude:** interpreta o que você quer fazer com aquele texto.
+
+O código Python controla as permissões, confirmações, alterações na agenda e respostas.
+
+## 3. Para que serve cada container
+
+Tudo está organizado no [docker-compose.yml](C:/Users/jvbin/Desktop/Whats_Agenda/docker-compose.yml).
+
+| Container | Responsabilidade |
+|---|---|
+| `api` | Receber webhooks e disponibilizar os endpoints do sistema |
+| `worker` | Processar mensagens, chamar a IA, executar operações e enviar respostas |
+| `beat` | Disparar tarefas periódicas, como verificar lembretes |
+| `postgres` | Guardar usuários, eventos, mensagens e lembretes |
+| `redis` | Transportar tarefas e manter contadores de limites de uso |
+| `transcription` | Executar a transcrição local dos áudios |
+| `evolution` | Conectar o sistema ao WhatsApp |
+| `evolution-postgres` | Guardar dados próprios da Evolution |
+| `evolution-redis` | Manter o cache utilizado pela Evolution |
+| `migrate` | Criar ou atualizar a estrutura do banco e depois encerrar |
+
+`api`, `worker`, `beat` e `migrate` usam o mesmo código do projeto, iniciando processos diferentes.
+
+O painel em `localhost:8080/manager` pertence à **Evolution**. O Whats_Agenda atualmente possui uma API, sem um painel visual próprio de administração.
+
+## 4. Onde ficam as funcionalidades principais
+
+### A. Inicialização e recebimento de mensagens
+
+**[app/main.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/main.py)**
+
+É a entrada da aplicação HTTP. Cria o FastAPI, registra as rotas e aplica cabeçalhos de segurança.
+
+**[app/api/evolution_webhook.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/api/evolution_webhook.py)**
+
+Principais funções:
+
+- `receive()`: recebe o webhook da Evolution, valida a requisição e persiste a mensagem.
+- `dispatch_received()`: encaminha a mensagem para processamento.
+
+**[app/integrations/evolution/normalizer.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/integrations/evolution/normalizer.py)**
+
+- `normalize_webhook()`: transforma o formato da Evolution em um formato interno mais simples.
+- Identifica remetente, texto e áudio.
+- Filtra mensagens que não devem gerar atendimento, como mensagens enviadas pelo próprio bot.
+
+### B. Processamento em segundo plano
+
+**[app/workers/inbound.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/workers/inbound.py)**
+
+É o coordenador do processamento.
+
+| Função | O que faz |
+|---|---|
+| `process_message()` | Entrada da tarefa Celery |
+| `_process_message()` | Coordena o atendimento de uma mensagem |
+| `_message_text()` | Obtém o texto original ou a transcrição do áudio |
+| `_consume_audio_seconds()` | Aplica os limites de utilização de áudio |
+| `_queue_reply()` | Acrescenta a agenda quando necessário e salva a resposta |
+| `_deliver_outbound()` | Envia uma resposta persistida e registra seu resultado |
+| `_dispatch_pending()` | Recupera mensagens e respostas ainda pendentes |
+
+Esse arquivo também contém `AUDIO_DISABLED_REPLY`, a mensagem educada solicitando texto quando `AUDIO_ENABLED=false`.
+
+O processamento usa uma trava por remetente para evitar duas operações simultâneas na mesma conversa.
+
+### C. Controle da conversa
+
+**[app/events/conversation.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/events/conversation.py)**
+
+A função central é **`handle_text()`**.
+
+Ela decide:
+
+- Se a mensagem é um cumprimento.
+- Se existe uma solicitação esperando data ou horário.
+- Se você está escolhendo entre compromissos com nomes iguais.
+- Se está confirmando uma alteração ou cancelamento.
+- Se precisa chamar o interpretador.
+- Qual operação executar e qual resposta devolver.
+
+A função `confirm_connection()` conclui a vinculação de um calendário ao usuário.
+
+**[app/events/social.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/events/social.py)**
+
+Contém `social_reply()` e `format_social_reply()`, usadas para cumprimentos e respostas sociais simples. Cumprimentos reconhecidos diretamente podem ser respondidos sem gastar uma chamada ao Claude.
+
+### D. Interpretação pelo Claude
+
+A interpretação está dividida em quatro arquivos:
+
+| Arquivo | Responsabilidade |
+|---|---|
+| [interpreter.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/ai/interpreter.py) | `IntentInterpreter.interpret()` escolhe interpretação local, Claude ou OpenAI |
+| [anthropic.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/ai/anthropic.py) | `interpret_with_claude()` faz a chamada à API do Claude |
+| [prompts.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/ai/prompts.py) | Guarda as instruções que explicam ao modelo como interpretar pedidos |
+| [schemas.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/ai/schemas.py) | Define `ParsedIntent`, o formato permitido para o resultado |
+
+Por exemplo, a frase:
+
+> “Troque o nome de Reunião para Planejamento.”
+
+Pode virar uma estrutura equivalente a:
+
+```json
+{
+  "intent": "update_event",
+  "target_event": "Reunião",
+  "title": "Planejamento",
+  "confidence": 0.98
+}
+```
+
+Esse é um exemplo ilustrativo. O Python recebe essa estrutura, valida os campos e procura o compromisso correspondente.
+
+**O Claude não recebe acesso direto ao banco nem executa alterações sozinho.**
+
+### E. Transcrição de áudio
+
+**[app/ai/transcription.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/ai/transcription.py)**
+
+- `transcribe_audio()`: encaminha o áudio ao serviço local ou ao provedor configurado.
+
+**[deploy/transcription/server.py](C:/Users/jvbin/Desktop/Whats_Agenda/deploy/transcription/server.py)**
+
+É uma aplicação separada, executada dentro do container `transcription`.
+
+Ela:
+
+1. Recebe o áudio com autenticação.
+2. Valida tamanho e duração.
+3. Executa o Whisper Small na CPU.
+4. Verifica sinais de transcrição pouco confiável ou repetitiva.
+5. Devolve o texto ao worker.
+
+O áudio é processado localmente. **O texto transcrito pode ser enviado ao Claude para interpretação.**
+
+O [Dockerfile da transcrição](C:/Users/jvbin/Desktop/Whats_Agenda/deploy/transcription/Dockerfile) instala as dependências e inclui o modelo na imagem.
+
+### F. Criação, alteração, exclusão e consulta de eventos
+
+**[app/events/service.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/events/service.py)**
+
+Esse arquivo concentra as regras da agenda.
+
+| Função | Responsabilidade |
+|---|---|
+| `active_connection()` | Obtém a conexão de calendário disponível |
+| `owned_event()` | Verifica se o evento pertence ao usuário |
+| `normalized_title()` | Normaliza títulos para comparação, incluindo acentos |
+| `find_target()` | Procura o compromisso que será alterado ou cancelado |
+| `validate_schedule()` | Valida data e duração |
+| `is_title_only_update()` | Identifica uma troca apenas de nome |
+| `prepare_plan()` | Prepara os dados da operação |
+| `apply_plan()` | Executa a criação, alteração ou exclusão |
+| `occurrences()` | Calcula ocorrências de eventos recorrentes |
+| `materialize_reminders()` | Cria os lembretes |
+| `cancel_reminders()` | Cancela lembretes que deixaram de valer |
+| `list_events()` | Consulta os compromissos |
+
+Quando você pede uma renomeação, `is_title_only_update()` permite manter a data e o horário existentes.
+
+Se houver vários eventos com o mesmo nome, o controlador apresenta opções. Depois da escolha, alterações e exclusões exigem confirmação.
+
+### G. Integrações com calendários
+
+**[app/integrations/calendars/service.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/integrations/calendars/service.py)**
+
+Contém três implementações:
+
+- `FakeCalendar`: suporte ao modo simulado.
+- `GoogleCalendar`: integração com Google Calendar.
+- `MicrosoftCalendar`: integração com Microsoft Graph/Outlook.
+
+Os provedores oferecem operações como:
+
+```text
+create_event()
+update_event()
+rename_event()
+delete_event()
+list_events()
+```
+
+`provider_for_connection()` prepara o provedor e trata a renovação dos tokens quando necessário.
+
+**[app/api/oauth.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/api/oauth.py)** contém `oauth_start()` e `oauth_callback()`, responsáveis pelo fluxo de autorização da conta Google ou Microsoft.
+
+### H. Exibição dos próximos cinco compromissos
+
+**[app/events/upcoming.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/events/upcoming.py)**
+
+- `append_upcoming()` acrescenta à resposta até cinco compromissos futuros.
+- Ordena por data.
+- Formata os horários no fuso do usuário.
+- Adiciona os emojis.
+- Busca em um horizonte de até dois anos.
+- Dispensa esse complemento quando um evento acabou de ser criado com sucesso.
+
+É aqui que você muda o texto “Seus próximos compromissos”, os emojis e a apresentação dessa lista.
+
+### I. “Digitando…” e atraso de três segundos
+
+**[app/integrations/evolution/client.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/integrations/evolution/client.py)**
+
+| Função | Responsabilidade |
+|---|---|
+| `send_presence()` | Envia o estado de presença |
+| `typing()` | Mantém o indicador de digitação durante o processamento |
+| `send_text()` | Envia a mensagem com o atraso configurado de 3 segundos |
+| `download_media()` | Obtém o áudio pela Evolution |
+| `configure_webhook()` | Configura o recebimento dos eventos |
+| `get_connection_status()` | Consulta a conexão com o WhatsApp |
+| `get_qr_code()` | Obtém o QR Code |
+
+Os três segundos são um atraso de envio. O tempo total também inclui fila, transcrição e interpretação.
+
+### J. Lembretes automáticos
+
+Há três partes:
+
+**[app/reminders/policies.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/reminders/policies.py)**
+
+Define as antecedências por categoria. Exemplos:
+
+| Categoria | Antecedências |
+|---|---|
+| Reunião | 24 horas, 1 hora e 15 minutos |
+| Consulta médica | 24 horas e 2 horas |
+| Academia | 1 hora |
+| Pagamento | 7 dias, 3 dias e 24 horas |
+
+`reminder_times()` descarta horários de lembrete que já passaram.
+
+**[app/reminders/renderer.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/reminders/renderer.py)**
+
+- `render_reminder()`: monta o texto e o emoji do lembrete.
+
+**[app/workers/reminders.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/workers/reminders.py)**
+
+- `dispatch_due()`: encaminha os lembretes cujo horário chegou.
+- `refresh_recurring()`: gera lembretes futuros de eventos recorrentes.
+- `cleanup()`: limpa estados expirados e conteúdo antigo elegível.
+
+As frequências ficam em [app/workers/celery_app.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/workers/celery_app.py). A verificação de lembretes ocorre a cada **30 segundos**.
+
+## 5. Onde os dados ficam guardados
+
+As tabelas estão definidas em [app/db/models/entities.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/db/models/entities.py).
+
+| Modelo | Dados armazenados |
+|---|---|
+| `User` | Identidade do usuário e fuso horário |
+| `InboundMessage` | Mensagem recebida, transcrição e situação do processamento |
+| `OutboundMessage` | Resposta preparada e situação do envio |
+| `ConversationState` | Pergunta ou confirmação pendente |
+| `Event` | Compromisso |
+| `Reminder` | Lembrete e seu horário |
+| `CalendarConnection` | Conta de calendário conectada e tokens criptografados |
+| `OAuthState` | Estado temporário da autorização |
+| `PendingConnection` | Conexão aguardando confirmação pelo WhatsApp |
+
+A conexão com o banco está em [app/db/session.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/db/session.py).
+
+A evolução da estrutura das tabelas fica nas [migrações Alembic](C:/Users/jvbin/Desktop/Whats_Agenda/alembic/versions).
+
+## 6. Configuração, segurança e administração
+
+| Local | O que controla |
+|---|---|
+| [.env](C:/Users/jvbin/Desktop/Whats_Agenda/.env) | Chaves, modelos, endereços e opções habilitadas |
+| [core/config.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/core/config.py) | Carregamento e validação das configurações |
+| [core/security.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/core/security.py) | Criptografia de tokens e comparação de segredos |
+| [core/limits.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/core/limits.py) | Limites de mensagens, IA e áudio |
+| [core/locks.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/core/locks.py) | Controle de concorrência por remetente |
+| [core/http.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/core/http.py) | Requisições externas com limites e tratamento de falhas |
+| [core/logging.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/core/logging.py) | Formatação e redução de exposição de dados nos logs |
+| [api/admin.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/api/admin.py) | Configuração da Evolution, consulta de falhas e desconexão de calendários |
+| [api/health.py](C:/Users/jvbin/Desktop/Whats_Agenda/app/api/health.py) | Endpoints de saúde da aplicação |
+
+O `.env` contém segredos e deve permanecer privado.
+
+## 7. Por que às vezes ele parece não entender?
+
+A implementação atual ajuda a explicar isso:
+
+- **O Claude recebe a mensagem atual, a data de referência e o fuso.** O histórico inteiro da conversa não é enviado.
+- O sistema guarda estados específicos, como “aguardando horário”, “escolhendo evento” e “aguardando confirmação”.
+- A maior parte das respostas é escrita pelo código Python.
+- A procura de um evento depende do título interpretado e dos eventos do usuário.
+- Em áudio, uma transcrição incorreta pode alterar o nome que chega ao interpretador.
+
+Assim, “mude Reunião para Planejamento” oferece informação suficiente. Já “troque aquele nome que eu falei antes” pode depender de um contexto que a implementação atual não fornece ao modelo.
+
+Também existem limites específicos: a busca de horário livre, por exemplo, procura atualmente **um intervalo de duas horas**, avançando em passos de 15 minutos.
+
+## 8. Ordem recomendada para entender o código
+
+Leia nesta sequência:
+
+1. **`main.py`** — como a aplicação começa.
+2. **`evolution_webhook.py`** — como uma mensagem entra.
+3. **`workers/inbound.py`** — como o processamento é coordenado.
+4. **`events/conversation.py`** — como o sistema decide o próximo passo.
+5. **`ai/interpreter.py` e `ai/anthropic.py`** — como o Claude interpreta.
+6. **`events/service.py`** — como a agenda é modificada.
+7. **`integrations/evolution/client.py`** — como a resposta volta.
+8. **`workers/reminders.py`** — como os lembretes funcionam.
+
+**Os três arquivos centrais para começar são `inbound.py`, `conversation.py` e `events/service.py`: eles mostram, respectivamente, a coordenação do atendimento, as decisões da conversa e as regras da agenda.**

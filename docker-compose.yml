@@ -1,0 +1,186 @@
+x-app: &app
+  build: .
+  env_file: .env
+  read_only: true
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  pids_limit: 128
+  mem_limit: 512m
+  cpus: 1
+  restart: unless-stopped
+
+services:
+  transcription:
+    build: ./deploy/transcription
+    profiles: ["audio"]
+    environment:
+      LOCAL_TRANSCRIPTION_API_KEY: ${LOCAL_TRANSCRIPTION_API_KEY:-}
+      MAX_AUDIO_BYTES: ${MAX_AUDIO_BYTES:-20000000}
+      MAX_AUDIO_SECONDS: ${MAX_AUDIO_SECONDS:-600}
+      MAX_TEXT_CHARS: ${MAX_TEXT_CHARS:-4000}
+    networks: [transcription-data]
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 2
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 20s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+  evolution:
+    build: ./deploy/evolution
+    ports: ["127.0.0.1:8080:8080"]
+    environment:
+      SERVER_URL: http://localhost:8080
+      SERVER_PORT: 8080
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY:?Configure EVOLUTION_API_KEY}
+      AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES: "false"
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://evolution:${EVOLUTION_DB_PASSWORD:?Configure EVOLUTION_DB_PASSWORD}@evolution-postgres:5432/evolution?schema=public
+      DATABASE_SAVE_DATA_INSTANCE: "true"
+      DATABASE_SAVE_DATA_NEW_MESSAGE: "true"
+      DATABASE_SAVE_DATA_HISTORIC: "false"
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: redis://evolution-redis:6379/0
+      CACHE_REDIS_PREFIX_KEY: evolution
+      CACHE_REDIS_SAVE_INSTANCES: "false"
+      CACHE_LOCAL_ENABLED: "false"
+      TELEMETRY_ENABLED: "false"
+      SENTRY_DSN: ""
+      LOG_LEVEL: ERROR,WARN
+      LOG_BAILEYS: error
+      CORS_ORIGIN: http://localhost:8080
+      CORS_CREDENTIALS: "false"
+      WEBHOOK_GLOBAL_ENABLED: "false"
+      RABBITMQ_ENABLED: "false"
+      KAFKA_ENABLED: "false"
+      SQS_ENABLED: "false"
+      WEBSOCKET_ENABLED: "false"
+    volumes: ["evolution_instances:/evolution/instances"]
+    networks: [default, evolution-data]
+    depends_on:
+      evolution-postgres: {condition: service_healthy}
+      evolution-redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      start_period: 120s
+      retries: 5
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    pids_limit: 256
+    mem_limit: 1536m
+    cpus: 2
+    restart: unless-stopped
+  evolution-postgres:
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${EVOLUTION_DB_ADMIN_PASSWORD:?Configure EVOLUTION_DB_ADMIN_PASSWORD}
+      POSTGRES_DB: evolution
+      APP_DB_USER: evolution
+      APP_DB_PASSWORD: ${EVOLUTION_DB_PASSWORD:?Configure EVOLUTION_DB_PASSWORD}
+    volumes:
+      - evolution_postgres_data:/var/lib/postgresql/data
+      - ./deploy/init-db.sql:/docker-entrypoint-initdb.d/10-app-role.sql:ro
+    networks: [evolution-data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d evolution"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+  evolution-redis:
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy noeviction
+    volumes: ["evolution_redis_data:/data"]
+    networks: [evolution-data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+  api:
+    <<: *app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log --no-proxy-headers
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  migrate:
+    <<: *app
+    command: alembic upgrade head
+    restart: "no"
+    depends_on:
+      postgres: {condition: service_healthy}
+  worker:
+    <<: *app
+    networks: [default, transcription-data]
+    command: celery -A app.workers.celery_app.celery worker --loglevel=INFO --concurrency=2
+    mem_limit: 768m
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+  beat:
+    <<: *app
+    command: celery -A app.workers.celery_app.celery beat --loglevel=INFO --schedule=/tmp/celerybeat-schedule
+    depends_on: [worker]
+  postgres:
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Configure a separate bootstrap password}
+      POSTGRES_DB: ${POSTGRES_DB}
+      APP_DB_USER: ${POSTGRES_USER}
+      APP_DB_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/init-db.sql:/docker-entrypoint-initdb.d/10-app-role.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy noeviction
+    volumes: ["redis_data:/data"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
+  evolution_instances:
+  evolution_postgres_data:
+  evolution_redis_data:
+
+networks:
+  transcription-data:
+    internal: true
+  evolution-data:
+    internal: true
+

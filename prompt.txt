@@ -1,0 +1,1 @@
+Quando pedir para alterar algo de algum evento sempre considere evento futuro, nunca um evento que ja passou

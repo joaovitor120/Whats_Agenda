@@ -1,0 +1,79 @@
+# Configuração local e variáveis de ambiente
+.env
+.env.*
+!.env.example
+.envrc
+.direnv/
+
+# Credenciais e chaves privadas
+credentials/
+secrets/
+credentials.json
+google-service-account*.json
+service-account*.json
+client_secret*.json
+token.json
+tokens.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python: ambientes, bytecode e empacotamento
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Caches, cobertura e relatórios gerados
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+reports/
+
+# Bancos locais, logs e estado do Celery
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.log
+logs/
+celerybeat-schedule*
+celerybeat.pid
+*.pid
+
+# Dados locais e backups
+backup/
+backups/
+*.bak
+*.dump
+postgres_data/
+redis_data/
+evolution_data/
+volumes/
+tmp/
+temp/
+
+# Editores e arquivos temporários do sistema
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+
