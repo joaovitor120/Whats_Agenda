@@ -36,9 +36,9 @@ services:
       retries: 3
   evolution:
     build: ./deploy/evolution
-    ports: ["127.0.0.1:8080:8080"]
+    ports: ["${EVOLUTION_BIND_ADDRESS:-127.0.0.1}:${EVOLUTION_PORT:-8080}:8080"]
     environment:
-      SERVER_URL: http://localhost:8080
+      SERVER_URL: ${EVOLUTION_SERVER_URL:-http://localhost:8080}
       SERVER_PORT: 8080
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY:?Configure EVOLUTION_API_KEY}
       AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES: "false"
@@ -56,7 +56,7 @@ services:
       SENTRY_DSN: ""
       LOG_LEVEL: ERROR,WARN
       LOG_BAILEYS: error
-      CORS_ORIGIN: http://localhost:8080
+      CORS_ORIGIN: ${EVOLUTION_SERVER_URL:-http://localhost:8080}
       CORS_CREDENTIALS: "false"
       WEBHOOK_GLOBAL_ENABLED: "false"
       RABBITMQ_ENABLED: "false"

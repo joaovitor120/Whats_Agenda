@@ -1,10 +1,10 @@
 # Implantação e verificações externas
 
-O Compose inclui uma Evolution local 2.3.7 fixada por digest, com banco/Redis separados e usuário sem root. O código não instala TLS, VPN, MFA, backups nem atualiza automaticamente essa imagem. Esses controles precisam ser aplicados ao ambiente antes de expor o serviço. As APIs da agenda e da Evolution são publicadas apenas no loopback.
+O Compose inclui uma Evolution local 2.3.7 fixada por digest, com banco/Redis separados e usuário sem root. O código não instala TLS, VPN, MFA, backups nem atualiza automaticamente essa imagem. As APIs da agenda e da Evolution são publicadas no loopback por padrão. O acesso direto por IP da Evolution pode ser configurado com `scripts/configure_evolution_access.py`, conforme `setup.md`; esse modo publica somente a Evolution e usa HTTP. Para HTTPS, use o proxy descrito abaixo.
 
 ## Rede e HTTPS
 
-- Mantenha Evolution, PostgreSQL e Redis em redes privadas. Não publique 5432/6379 nem o painel Evolution.
+- Mantenha PostgreSQL e Redis em redes privadas, sem publicar 5432/6379. Para acesso permanente ao painel Evolution, prefira HTTPS com controle de acesso; o modo direto por IP descrito no setup requer proteger a API Key também durante o transporte.
 - Use TLS com verificação de certificado em conexões de banco/Redis que saiam da rede privada.
 - Termine HTTPS em um proxy confiável. Na API, habilite `--proxy-headers --forwarded-allow-ips=<IP_EXATO_DO_PROXY>`. Nunca use `*`.
 - O proxy deve sobrescrever `X-Forwarded-For` e `X-Forwarded-Proto`, sem confiar nos valores recebidos da Internet.

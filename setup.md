@@ -258,6 +258,27 @@ Depois de novas alterações no `.env`, use `docker compose up -d --force-recrea
 
 Os nomes dos botões podem variar no painel. Não crie outra instância com nome diferente para contornar um erro: o backend só aceita a instância configurada.
 
+### Acesso direto ao painel na VPS, sem túnel
+
+No servidor, configure o IP e uma porta externa disponível. Neste exemplo, 8090 evita a porta 8080 que já apresentou conflito:
+
+```bash
+cd /opt/Whats_Agenda
+git pull --ff-only
+python3 scripts/configure_evolution_access.py --host 76.13.228.205 --port 8090
+docker compose config --quiet
+docker compose up -d --force-recreate evolution
+docker compose ps evolution
+```
+
+O script atualiza somente `EVOLUTION_BIND_ADDRESS=0.0.0.0`, `EVOLUTION_PORT=8090` e `EVOLUTION_SERVER_URL=http://76.13.228.205:8090` no `.env`. As credenciais são preservadas. O Compose usa a mesma URL como origem permitida no CORS e mantém a porta interna da Evolution em 8080. A API da agenda, PostgreSQL e Redis continuam privados.
+
+Abra **http://76.13.228.205:8090/manager**. No login, informe **http://76.13.228.205:8090** e sua `EVOLUTION_API_KEY`. Depois crie/abra a instância e leia o QR conforme os passos anteriores. O navegador acessa diretamente a VPS; nenhuma Evolution precisa rodar no computador.
+
+Se houver firewall no painel do provedor, permita TCP 8090. Se a porta escolhida estiver ocupada, execute o script com outra porta disponível e use a nova URL indicada. Para conferir localmente na VPS: `curl -fsS http://127.0.0.1:8090/`. Esta verificação confirma o serviço, mas o acesso externo ainda depende das regras de rede.
+
+O acesso direto por IP deste exemplo usa HTTP, que transmite a API Key sem criptografia. Para uso permanente com HTTPS, configure um domínio e proxy conforme `deploy/PRODUCTION.md`.
+
 ### Configure o webhook automaticamente
 
 Com a instância criada e pareada:

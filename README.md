@@ -199,6 +199,10 @@ Padrões:
 
 Eventos aceitam datas futuras até dois anos, duração máxima de sete dias e recorrência diária ou semanal em um ou vários dias. Os lembretes são materializados para 365 dias e renovados diariamente, sem terminar a série ao completar esse horizonte. As políticas estão em `app/reminders/policies.py`.
 
+### Painel Evolution na VPS
+
+Para acessar diretamente pelo IP, sem túnel SSH, execute na VPS `python3 scripts/configure_evolution_access.py --host SEU_IP --port 8090` e `docker compose up -d --force-recreate evolution`. O script configura a porta publicada, a URL pública e a origem CORS do painel, preservando as credenciais e os volumes. O login fica em `http://SEU_IP:8090/manager`; o bot continua usando `http://evolution:8080` e o webhook `http://api:8000/webhooks/evolution` na rede Docker. Veja o passo a passo em `setup.md`. Esse acesso por IP usa HTTP; HTTPS requer domínio/proxy.
+
 ### Confirmação, correções e vários compromissos
 
 - O acesso é restrito aos telefones de `WHATSAPP_ALLOWED_CONTACTS` no `.env`, em JSON `{"telefone internacional":"Nome"}`. Lista ausente ou `{}` bloqueia todos. Use `55` + DDD + número, sem pontuação. Contatos externos à lista são ignorados antes de transcrição/LLM; o worker revalida mensagens antigas e o cliente Evolution bloqueia respostas, presença e lembretes a destinatários não autorizados. Veja em `setup.md` como editar a lista e recriar os serviços para aplicar a mudança.
